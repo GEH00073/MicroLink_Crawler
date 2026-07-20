@@ -55,3 +55,7 @@ M5Stack社が発売した StampFly と AtomJoyStick のファームウェアの�
 
 - オリジナルファームウェア https://github.com/m5stack/Atom-JoyStick
 - こうへい版シンプルファームウエア https://github.com/M5Fly-kanazawa/Simple_StampFly_Joy
+
+### Stamp Pico とJoyのペアリング
+
+Stamp Picoは、ペアリング済みのJoyから届く操作パケットだけを受け付けます。初回またはJoyを変更したときは、Joyをペアリングモードで起動してからStamp Picoをリセットしてください。Joyがブロードキャストする探索パケットへ応答し、その応答の送信元MACをJoyが保存します。
