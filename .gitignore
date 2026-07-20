@@ -1,0 +1,9 @@
+# PlatformIO build products
+.pio/
+
+# macOS metadata
+.DS_Store
+
+# Editor-local settings
+.vscode/.browse.c_cpp.db*
+.vscode/ipch/
