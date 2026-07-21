@@ -14,16 +14,13 @@ struct bmi2_dev bmi2_dev;
 struct bmi2_sens_config sens_cfg[2];
 struct bmi2_sens_data sensor_data[2];
 
-// APモード設定
-const char* ap_ssid = "ATOMS3R_CAM";
-const char* ap_password = "30023002aa";  // 8文字以上
-int wifiChannel = 3;  // 好きなチャンネル番号（1〜13）2〜5,9〜10が空いてる?
-
-// 固定IPを設定する場合
-IPAddress local_IP(192,168,4,1);
-IPAddress gateway(192,168,4,1);
-IPAddress subnet(255,255,255,0);
-
+// ==== WiFi ====
+const char *ssid     = "B501";
+const char *password = "30023002";
+const int LOCAL_IP[4] = {192, 168, 1, 57};
+const int SUBNET[4]   = {255, 255, 255, 0};
+const int GATEWAY[4]  = {192, 168, 1, 1};
+const int DNS_ADDR[4] = {192, 168, 1, 1};
 
 typedef struct struct_message {
   int16_t x;
@@ -223,7 +220,7 @@ static esp_err_t stream_handler(httpd_req_t *req){
     
     readAccelGyro();
     // Serial出力
-    Serial2.printf("a:%.2f %.2f %.2f ,g:%.2f %.2f %.2f\n", ax, ay, az, gx, gy, gz);
+    // Serial2.printf("a:%.2f %.2f %.2f ,g:%.2f %.2f %.2f\n", ax, ay, az, gx, gy, gz);
     // Serial2.printf("g:%.2f %.2f %.2f,\n", gx, gy, gz);
     // Serial2.printf("%d %d %d %d \n", x_min, y_min, x_max - x_min, y_max - y_min);
 
@@ -260,7 +257,7 @@ void start_MJPEG_server(){
 
   httpd_handle_t httpd=NULL;
   if(httpd_start(&httpd,&config)==ESP_OK){
-    httpd_uri_t stream_uri={ .uri="/", .method=HTTP_GET, .handler=stream_handler, .user_ctx=NULL };
+    httpd_uri_t stream_uri={ .uri="/video", .method=HTTP_GET, .handler=stream_handler, .user_ctx=NULL };
     httpd_register_uri_handler(httpd,&stream_uri);
   }
 }
@@ -310,13 +307,14 @@ void setup() {
   sensor_t *s=esp_camera_sensor_get();
   s->set_hmirror(s,0);
 
-  // APモード起動
-  WiFi.mode(WIFI_AP);
-  WiFi.softAPConfig(local_IP, gateway, subnet);
-  WiFi.softAP(ap_ssid, ap_password, wifiChannel);
-  
-  Serial.print("AP IP address: ");
-  Serial.println(WiFi.softAPIP());
+  IPAddress ip(LOCAL_IP[0],LOCAL_IP[1],LOCAL_IP[2],LOCAL_IP[3]);
+  IPAddress subnet(SUBNET[0],SUBNET[1],SUBNET[2],SUBNET[3]);
+  IPAddress gateway(GATEWAY[0],GATEWAY[1],GATEWAY[2],GATEWAY[3]);
+  IPAddress dns(DNS_ADDR[0],DNS_ADDR[1],DNS_ADDR[2],DNS_ADDR[3]);
+  WiFi.config(ip,gateway,subnet,dns);
+  WiFi.begin(ssid,password);
+  while(WiFi.status()!=WL_CONNECTED){delay(500);Serial.println(".");}
+  Serial.println(WiFi.localIP());
 
   start_MJPEG_server();
 
@@ -325,7 +323,7 @@ void setup() {
 
   esp_now_peer_info_t peerInfo={};
   memcpy(peerInfo.peer_addr,broadcastAddress,6);
-  peerInfo.channel = wifiChannel;  
+  peerInfo.channel=0;  
   peerInfo.encrypt=false;
   esp_now_add_peer(&peerInfo);
 }
