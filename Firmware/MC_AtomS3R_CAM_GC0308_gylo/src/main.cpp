@@ -14,9 +14,9 @@ struct bmi2_dev bmi2_dev;
 struct bmi2_sens_config sens_cfg[2];
 struct bmi2_sens_data sensor_data[2];
 
-// ==== WiFi ====
-const char *ssid     = "B501";
-const char *password = "30023002";
+// ==== WiFi（secrets.ini で設定） ====
+const char *ssid     = WIFI_SSID;
+const char *password = WIFI_PASSWORD;
 const int LOCAL_IP[4] = {192, 168, 1, 57};
 const int SUBNET[4]   = {255, 255, 255, 0};
 const int GATEWAY[4]  = {192, 168, 1, 1};

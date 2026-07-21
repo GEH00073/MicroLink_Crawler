@@ -6,11 +6,9 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 
-// ===== WiFi設定 =====
-// const char* ssid     = "ATOMS3R_CAM";
-// const char* password = "30023002aa";
-const char* ssid     = "B501";
-const char* password = "30023002";
+// ===== WiFi設定（secrets.ini で設定） =====
+const char* ssid     = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 const int wifiChannel = 3; // 送信側と同じチャンネル
 
 // ===== ストリーミングサーバのURL =====
