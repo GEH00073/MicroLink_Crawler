@@ -1,6 +1,9 @@
 # PlatformIO build products
 .pio/
 
+# Local Wi-Fi credentials
+secrets.ini
+
 # macOS metadata
 .DS_Store
 

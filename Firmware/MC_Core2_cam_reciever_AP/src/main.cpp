@@ -6,20 +6,18 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 
-// ===== WiFi設定（secrets.ini で設定） =====
-const char* ssid     = WIFI_SSID;
-const char* password = WIFI_PASSWORD;
-const int wifiChannel = 3; // 送信側と同じチャンネル
+// ===== AtomS3R-CAM AP設定 =====
+const char* ssid     = "AtomS3R_CAM";
+const char* password = "123456";
 
 // ===== ストリーミングサーバのURL =====
-// AtomS3R-CAM 側で表示された IP アドレスに合わせて変更してください
-// String streamURL = "http://192.168.4.1/";
-String streamURL = "http://192.168.1.57/video";
-// String streamURL = "http://192.168.1.125/";
+String streamURL = "http://192.168.4.1/video";
 
 
 // バッファサイズ
 #define STREAM_BUFFER_SIZE (300 * 1024)
+// 1: Core 0で受信、Core 1で描画 / 0: 従来の単一ループ方式
+#define USE_DUAL_CORE_STREAMING 0
 
 static LGFX_Sprite canvas(&M5.Display);   // オフスクリーン描画用バッファ
 static LGFX_Sprite text(&M5.Display);   // テキスト描画用バッファ
@@ -29,10 +27,53 @@ WiFiClient client;
 HTTPClient http;
 uint8_t* jpgBuf;
 size_t jpgBufLen;
+uint8_t* latestJpgBuf;
+size_t latestJpgLen = 0;
+bool latestJpgReady = false;
+#if USE_DUAL_CORE_STREAMING
+uint8_t* displayJpgBuf;
+size_t displayJpgLen = 0;
+SemaphoreHandle_t frameBufferMutex = nullptr;
+TaskHandle_t streamReceiveTaskHandle = nullptr;
+TaskHandle_t streamDisplayTaskHandle = nullptr;
+#endif
 
 u_long ptime, ptime2;
 int fps;
 float angleAccum = 0; // 累積回転角（ラジアン）
+unsigned long lastAngleUpdateMs = 0;
+constexpr unsigned long IMU_UPDATE_INTERVAL_MS = 100; // 10 Hz
+
+volatile uint32_t diagEspNowPackets = 0;
+volatile uint32_t diagLastEspNowMs = 0;
+uint32_t diagRxBytes = 0;
+uint32_t diagJpegFrames = 0;
+uint32_t diagDrawFrames = 0;
+uint32_t diagDroppedFrames = 0;
+uint32_t diagLastTcpRxMs = 0;
+uint32_t diagLastJpegMs = 0;
+uint32_t diagLastDrawMs = 0;
+uint32_t diagMaxDecodeUs = 0;
+uint32_t diagMaxPushUs = 0;
+uint32_t diagLastReportMs = 0;
+bool diagTcpStallReported = false;
+
+constexpr uint32_t STREAM_STALL_RECONNECT_MS = 2500;
+constexpr uint32_t STREAM_START_TIMEOUT_MS = 1500;
+constexpr uint32_t STREAM_RECONNECT_RETRY_MS = 500;
+uint32_t streamConnectedMs = 0;
+uint32_t lastStreamConnectAttemptMs = 0;
+uint32_t streamReconnectCount = 0;
+
+// JPEG処理用の状態管理
+bool inJPEG = false;
+size_t idx = 0;
+uint8_t jpegPreviousByte = 0;
+
+#if USE_DUAL_CORE_STREAMING
+void streamReceiveTask(void* parameter);
+void streamDisplayTask(void* parameter);
+#endif
 
 // === esp-nowデータ構造体 ===
 typedef struct struct_message {
@@ -46,7 +87,10 @@ struct_message incomingData;
 
 // === ESP-NOW 受信コールバック ===
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingDataBuf, int len) {
+  if (len != sizeof(incomingData)) return;
   memcpy(&incomingData, incomingDataBuf, sizeof(incomingData));
+  diagEspNowPackets++;
+  diagLastEspNowMs = millis();
 //   Serial.printf("ESP-NOW RECV -> x:%d y:%d  ax:%.2f ay:%.2f az:%.2f  gx:%.2f gy:%.2f gz:%.2f\n",
 //                 incomingData.x, incomingData.y,
 //                 incomingData.ax, incomingData.ay, incomingData.az,
@@ -91,6 +135,67 @@ void drawCrosshair() {
     canvas.drawLine(cx, cy + gap, cx, cy + len, TFT_WHITE);
 }
 
+void resetStreamParser() {
+    inJPEG = false;
+    idx = 0;
+    jpegPreviousByte = 0;
+    latestJpgLen = 0;
+    latestJpgReady = false;
+}
+
+bool connectCameraStream() {
+    lastStreamConnectAttemptMs = millis();
+    http.end();
+    client.stop();
+    resetStreamParser();
+
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    http.setReuse(false);
+    http.setConnectTimeout(1000);
+    http.setTimeout(1000);
+    if (!http.begin(client, streamURL)) {
+        Serial.println("[CORE][RECONNECT_FAIL] http.begin");
+        return false;
+    }
+
+    const int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("[CORE][RECONNECT_FAIL] HTTP=%d\n", httpCode);
+        http.end();
+        client.stop();
+        return false;
+    }
+
+    client.setNoDelay(true);
+    streamConnectedMs = millis();
+    diagLastTcpRxMs = 0;
+    diagTcpStallReported = false;
+    streamReconnectCount++;
+    Serial.printf("[CORE][STREAM_CONNECTED] count=%lu\n",
+                  (unsigned long)streamReconnectCount);
+    return true;
+}
+
+void serviceStreamConnection() {
+    const uint32_t now = millis();
+    const bool hasNoPendingData = client.available() == 0;
+    const bool receiveStalled = diagLastTcpRxMs != 0 && hasNoPendingData &&
+                                now - diagLastTcpRxMs >= STREAM_STALL_RECONNECT_MS;
+    const bool startTimedOut = diagLastTcpRxMs == 0 && streamConnectedMs != 0 &&
+                               now - streamConnectedMs >= STREAM_START_TIMEOUT_MS;
+    const bool disconnected = !client.connected();
+
+    if (!receiveStalled && !startTimedOut && !disconnected) return;
+    if (now - lastStreamConnectAttemptMs < STREAM_RECONNECT_RETRY_MS) return;
+
+    Serial.printf("[CORE][RECONNECT] reason=%s rxAge=%lums conn=%d wifi=%d\n",
+                  disconnected ? "closed" : (startTimedOut ? "start" : "stall"),
+                  diagLastTcpRxMs == 0 ? 0UL : (unsigned long)(now - diagLastTcpRxMs),
+                  client.connected(), WiFi.status());
+    connectCameraStream();
+}
+
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
@@ -111,17 +216,20 @@ void setup() {
 
     lamp.setPsram(true);
     lamp.createSprite(80, 48); // メモリ確保
-    lamp.setSwapBytes(false); // スワップON(色がおかしい場合には変更する)
+    lamp.setSwapBytes(false);
     lamp.setPivot(0, 0);
     lamp.setTextFont(1);
-    lamp.setTextColor(0xFFFF, 0x0000);  // 白文字、黒背景
+    lamp.setTextColor(0xFFFF, 0x0000);
    
 
     // TJpg_Decoder設定
     TJpgDec.setJpgScale(1);
     TJpgDec.setCallback(tft_output);
 
-    // Wi-Fi接続
+    // AtomS3R-CAM が起動するアクセスポイントへ接続する。
+    // 接続先APのチャネルをそのまま使うため、ESP-NOWも同じチャネルで動作する。
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.begin(ssid, password);
     M5.Display.print("Connecting WiFi");
     while (WiFi.status() != WL_CONNECTED) {
@@ -130,26 +238,28 @@ void setup() {
     }
     M5.Display.println("\nWiFi Connected!");
     M5.Display.println(WiFi.localIP());
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
-    // HTTP接続開始
-    if (http.begin(client, streamURL)) {
-        int httpCode = http.GET();
-        if (httpCode == HTTP_CODE_OK) {
-            M5.Display.println("Connected to camera stream.");
-        } else {
-            M5.Display.printf("HTTP error: %d\n", httpCode);
-        }
-    } else {
-        M5.Display.println("HTTP connect failed");
-    }
+    // HTTP接続開始。切断後も同じ関数でJPEG解析状態を初期化して再接続する。
+    if (connectCameraStream()) M5.Display.println("Connected to camera stream.");
+    else M5.Display.println("HTTP connect failed");
 
     jpgBuf = (uint8_t*)malloc(STREAM_BUFFER_SIZE);
+    latestJpgBuf = (uint8_t*)malloc(STREAM_BUFFER_SIZE);
+#if USE_DUAL_CORE_STREAMING
+    displayJpgBuf = (uint8_t*)malloc(STREAM_BUFFER_SIZE);
+#endif
     jpgBufLen = 0;
+    if (jpgBuf == nullptr || latestJpgBuf == nullptr
+#if USE_DUAL_CORE_STREAMING
+        || displayJpgBuf == nullptr
+#endif
+    ) {
+        Serial.println("JPEG buffer allocation failed");
+        return;
+    }
 
     M5.Display.clear();
-
-    // チャンネルを送信側と同じに固定
-    esp_wifi_set_channel(wifiChannel, WIFI_SECOND_CHAN_NONE);
 
     // ===== ESP-NOW 初期化 =====
     if (esp_now_init() != ESP_OK) {
@@ -158,11 +268,24 @@ void setup() {
     }
     esp_now_register_recv_cb(OnDataRecv);
 
+#if USE_DUAL_CORE_STREAMING
+    frameBufferMutex = xSemaphoreCreateMutex();
+    if (frameBufferMutex == nullptr) {
+        Serial.println("Frame buffer mutex creation failed");
+        return;
+    }
+    if (xTaskCreatePinnedToCore(streamReceiveTask, "stream_rx", 8192, nullptr, 3,
+                                &streamReceiveTaskHandle, 0) != pdPASS) {
+        Serial.println("Stream receive task creation failed");
+        return;
+    }
+    if (xTaskCreatePinnedToCore(streamDisplayTask, "stream_display", 12288, nullptr, 2,
+                                &streamDisplayTaskHandle, 1) != pdPASS) {
+        Serial.println("Stream display task creation failed");
+        return;
+    }
+#endif
 }
-
-// JPEG処理用の状態管理
-bool inJPEG = false;
-size_t idx = 0;
 
 uint16_t lineColors[9] = {
     TFT_GREEN,      // 1行目: 緑
@@ -176,8 +299,230 @@ uint16_t lineColors[9] = {
     TFT_SKYBLUE     // 9行目: 明るい水色
 };
 
+#if USE_DUAL_CORE_STREAMING
+void processStreamBytes(const uint8_t* data, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        const uint8_t byte = data[i];
+
+        if (!inJPEG) {
+            if (jpegPreviousByte == 0xFF && byte == 0xD8) {
+                idx = 0;
+                jpgBuf[idx++] = 0xFF;
+                jpgBuf[idx++] = 0xD8;
+                inJPEG = true;
+            }
+            jpegPreviousByte = byte;
+            continue;
+        }
+
+        if (idx >= STREAM_BUFFER_SIZE) {
+            idx = 0;
+            inJPEG = false;
+            jpegPreviousByte = byte;
+            continue;
+        }
+
+        jpgBuf[idx++] = byte;
+        const bool frameComplete = jpegPreviousByte == 0xFF && byte == 0xD9;
+        jpegPreviousByte = byte;
+        if (!frameComplete) continue;
+
+        xSemaphoreTake(frameBufferMutex, portMAX_DELAY);
+        if (latestJpgReady) diagDroppedFrames++;
+        uint8_t* completedJpg = jpgBuf;
+        jpgBuf = latestJpgBuf;
+        latestJpgBuf = completedJpg;
+        latestJpgLen = idx;
+        latestJpgReady = true;
+        xSemaphoreGive(frameBufferMutex);
+        diagJpegFrames++;
+        diagLastJpegMs = millis();
+
+        idx = 0;
+        inJPEG = false;
+    }
+}
+
+void streamReceiveTask(void* parameter) {
+    uint8_t receiveBuffer[2048];
+    while (true) {
+        const int availableBytes = client.available();
+        if (client.connected() && availableBytes > 0) {
+            const size_t readSize = min<size_t>(sizeof(receiveBuffer), availableBytes);
+            const int len = client.read(receiveBuffer, readSize);
+            if (len > 0) {
+                const uint32_t now = millis();
+                diagRxBytes += len;
+                diagLastTcpRxMs = now;
+                diagTcpStallReported = false;
+                processStreamBytes(receiveBuffer, len);
+                continue;
+            }
+        }
+        vTaskDelay(1);
+    }
+}
+#endif
+
+void drawLatestFrame() {
+    uint8_t* frameBuffer = latestJpgBuf;
+    size_t frameLength = latestJpgLen;
+
+#if USE_DUAL_CORE_STREAMING
+    xSemaphoreTake(frameBufferMutex, portMAX_DELAY);
+    if (!latestJpgReady) {
+        xSemaphoreGive(frameBufferMutex);
+        return;
+    }
+    uint8_t* previousDisplayBuffer = displayJpgBuf;
+    displayJpgBuf = latestJpgBuf;
+    latestJpgBuf = previousDisplayBuffer;
+    displayJpgLen = latestJpgLen;
+    latestJpgReady = false;
+    frameBuffer = displayJpgBuf;
+    frameLength = displayJpgLen;
+    xSemaphoreGive(frameBufferMutex);
+#else
+    if (!latestJpgReady) return;
+#endif
+
+    const uint32_t decodeStartUs = micros();
+    TJpgDec.drawJpg(0, 0, frameBuffer, frameLength);
+    const uint32_t decodeUs = micros() - decodeStartUs;
+    if (decodeUs > diagMaxDecodeUs) diagMaxDecodeUs = decodeUs;
+
+    const uint32_t pushStartUs = micros();
+    drawCrosshair();
+    canvas.pushRotateZoom(118, 108, 270, 1.5, 1.5);
+    const uint32_t pushUs = micros() - pushStartUs;
+    if (pushUs > diagMaxPushUs) diagMaxPushUs = pushUs;
+    diagDrawFrames++;
+    diagLastDrawMs = millis();
+
+    static size_t lastJpgSize = 0;
+    if (frameLength != lastJpgSize) {
+        fps++;
+        lastJpgSize = frameLength;
+    }
+
+    const unsigned long now = millis();
+    if (now - lastAngleUpdateMs >= IMU_UPDATE_INTERVAL_MS) {
+        const float dt = lastAngleUpdateMs == 0
+            ? IMU_UPDATE_INTERVAL_MS / 1000.0f
+            : (now - lastAngleUpdateMs) / 1000.0f;
+        if (incomingData.gy > 0.1f || incomingData.gy < -0.1f) {
+            angleAccum += incomingData.gy * PI / 180.0f * dt;
+        }
+        lastAngleUpdateMs = now;
+    }
+
+    if (now - ptime >= IMU_UPDATE_INTERVAL_MS) {
+        text.clear();
+        text.setCursor(0, 10);
+        text.setTextColor(TFT_WHITE, TFT_BLACK);
+        text.printf("fps: %.1f\n", fps * 10.0);
+        text.setCursor(0, 20); text.setTextColor(TFT_CYAN, TFT_BLACK);
+        text.printf("x: %d\n", incomingData.y);
+        text.setCursor(0, 30); text.setTextColor(TFT_ORANGE, TFT_BLACK);
+        text.printf("y: %d\n", incomingData.x);
+        text.setCursor(0, 40); text.setTextColor(TFT_SKYBLUE, TFT_BLACK);
+        text.printf("ax: %.3f\n", incomingData.ax);
+        text.setCursor(0, 50); text.setTextColor(TFT_YELLOW, TFT_BLACK);
+        text.printf("ay: %.3f\n", incomingData.ay);
+        text.setCursor(0, 60); text.setTextColor(TFT_MAGENTA, TFT_BLACK);
+        text.printf("az: %.3f\n", incomingData.az);
+
+        const int frameX = 30, frameY = 110, radius = 30;
+        text.drawCircle(frameX, frameY, radius, TFT_GREEN);
+        const int arrowX = frameX + int(cos(angleAccum) * radius);
+        const int arrowY = frameY + int(sin(angleAccum) * radius);
+        text.drawLine(frameX, frameY, arrowX, arrowY, TFT_YELLOW);
+        const float headAngle = PI / 6;
+        const int hx1 = arrowX - int(cos(angleAccum - headAngle) * 10);
+        const int hy1 = arrowY - int(sin(angleAccum - headAngle) * 10);
+        const int hx2 = arrowX - int(cos(angleAccum + headAngle) * 10);
+        const int hy2 = arrowY - int(sin(angleAccum + headAngle) * 10);
+        text.drawLine(arrowX, arrowY, hx1, hy1, TFT_YELLOW);
+        text.drawLine(arrowX, arrowY, hx2, hy2, TFT_YELLOW);
+        text.pushSprite(241, 10);
+        fps = 0;
+        ptime = now;
+        M5.Display.setCursor(43, 225);
+        M5.Display.print("Auto             Serch             Zoom");
+    }
+
+    if (now - ptime2 >= 500) {
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 5; c++) {
+                const uint16_t color = random(0, 3) == 0 ? TFT_BLACK : random(0x0001, 0xFFFF);
+                lamp.fillRect(c * 12, r * 12, 11, 11, color);
+            }
+        }
+        lamp.pushSprite(241, 170);
+        ptime2 = now;
+    }
+#if !USE_DUAL_CORE_STREAMING
+    latestJpgReady = false;
+#endif
+}
+
+#if USE_DUAL_CORE_STREAMING
+void streamDisplayTask(void* parameter) {
+    while (true) {
+        drawLatestFrame();
+        vTaskDelay(1);
+    }
+}
+#endif
+
+void reportCoreDiagnostics() {
+    const uint32_t now = millis();
+    const uint32_t rxAge = diagLastTcpRxMs == 0 ? 0 : now - diagLastTcpRxMs;
+    const uint32_t jpegAge = diagLastJpegMs == 0 ? 0 : now - diagLastJpegMs;
+    const uint32_t drawAge = diagLastDrawMs == 0 ? 0 : now - diagLastDrawMs;
+    const uint32_t nowAge = diagLastEspNowMs == 0 ? 0 : now - diagLastEspNowMs;
+
+    if (diagLastTcpRxMs != 0 && rxAge >= 500 && !diagTcpStallReported) {
+        Serial.printf("[CORE][TCP_STALL] age=%lums jpegAge=%lums drawAge=%lums "
+                      "avail=%d conn=%d wifi=%d rssi=%d heap=%u psram=%u\n",
+                      (unsigned long)rxAge, (unsigned long)jpegAge,
+                      (unsigned long)drawAge, client.available(), client.connected(),
+                      WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap(), ESP.getFreePsram());
+        diagTcpStallReported = true;
+    }
+
+    if (now - diagLastReportMs >= 1000) {
+        Serial.printf("[CORE][STAT] rxKB=%lu jpeg=%lu draw=%lu drop=%lu "
+                      "decMax=%luus pushMax=%luus rxAge=%lums jpegAge=%lums "
+                      "drawAge=%lums nowRx=%lu nowAge=%lums avail=%d rssi=%d "
+                      "heap=%u psram=%u\n",
+                      (unsigned long)(diagRxBytes / 1024),
+                      (unsigned long)diagJpegFrames,
+                      (unsigned long)diagDrawFrames,
+                      (unsigned long)diagDroppedFrames,
+                      (unsigned long)diagMaxDecodeUs,
+                      (unsigned long)diagMaxPushUs,
+                      (unsigned long)rxAge,
+                      (unsigned long)jpegAge,
+                      (unsigned long)drawAge,
+                      (unsigned long)diagEspNowPackets,
+                      (unsigned long)nowAge,
+                      client.available(), WiFi.RSSI(),
+                      ESP.getFreeHeap(), ESP.getFreePsram());
+        diagRxBytes = 0;
+        diagJpegFrames = 0;
+        diagDrawFrames = 0;
+        diagDroppedFrames = 0;
+        diagMaxDecodeUs = 0;
+        diagMaxPushUs = 0;
+        diagEspNowPackets = 0;
+        diagLastReportMs = now;
+    }
+}
+
 void loop() {
     M5.update();
+    serviceStreamConnection();
     // タッチがあるか確認
     auto t = M5.Touch.getDetail();
     if (t.isPressed()) {
@@ -198,21 +543,69 @@ void loop() {
         // M5.Display.printf("x = %4d, y = %4d, press = %d", x, y, p);
     }
 
+#if USE_DUAL_CORE_STREAMING
+    // TCP受信と描画は専用タスクが担当し、loopは入力処理だけを行う。
+    vTaskDelay(1);
+#else
     if (client.connected() && client.available()) {
-        // 一度にまとめて読み込む
-        int len = client.read(jpgBuf + idx, 2048);
+        // 受信ブロックの境界に依存せず、JPEGのSOI/EOIで正確に切り出す。
+        // 一度に最大64KBまで処理し、その中で最後に完成したJPEGだけを描画する。
+        size_t receiveBudget = 64 * 1024;
+        while (client.available() && receiveBudget > 0) {
+            uint8_t receiveBuffer[2048];
+            const size_t readSize = min<size_t>(sizeof(receiveBuffer), receiveBudget);
+            int len = client.read(receiveBuffer, readSize);
         if (len > 0) {
-            idx += len;
-
-            // バッファオーバーフロー防止
-            if (idx >= STREAM_BUFFER_SIZE) {
-                idx = 0;
-                inJPEG = false;
+            const uint32_t rxNow = millis();
+            if (diagTcpStallReported) {
+                Serial.printf("[CORE][RX_RESUME] gap=%lums avail=%d rssi=%d\n",
+                              (unsigned long)(rxNow - diagLastTcpRxMs),
+                              client.available(), WiFi.RSSI());
+                diagTcpStallReported = false;
             }
+            diagRxBytes += len;
+            diagLastTcpRxMs = rxNow;
+            receiveBudget -= len;
+            for (int i = 0; i < len; ++i) {
+                const uint8_t byte = receiveBuffer[i];
 
-            // JPEG EOI (0xFF 0xD9) を探す
-            for (int i = 1; i < len; i++) {
-                if (jpgBuf[idx - i] == 0xD9 && jpgBuf[idx - i - 1] == 0xFF) {
+                if (!inJPEG) {
+                    if (jpegPreviousByte == 0xFF && byte == 0xD8) {
+                        idx = 0;
+                        jpgBuf[idx++] = 0xFF;
+                        jpgBuf[idx++] = 0xD8;
+                        inJPEG = true;
+                    }
+                    jpegPreviousByte = byte;
+                    continue;
+                }
+
+                if (idx >= STREAM_BUFFER_SIZE) {
+                    Serial.println("JPEG buffer overflow; discarding frame");
+                    idx = 0;
+                    inJPEG = false;
+                    jpegPreviousByte = byte;
+                    continue;
+                }
+
+                jpgBuf[idx++] = byte;
+                const bool frameComplete = jpegPreviousByte == 0xFF && byte == 0xD9;
+                jpegPreviousByte = byte;
+                if (frameComplete) {
+                    // 完成JPEGは最新フレーム用バッファと入れ替える。
+                    // まだ描画していない古いフレームは、この時点で破棄される。
+                    if (latestJpgReady) diagDroppedFrames++;
+                    uint8_t* completedJpg = jpgBuf;
+                    jpgBuf = latestJpgBuf;
+                    latestJpgBuf = completedJpg;
+                    latestJpgLen = idx;
+                    latestJpgReady = true;
+                    diagJpegFrames++;
+                    diagLastJpegMs = millis();
+                    idx = 0;
+                    inJPEG = false;
+                    continue;
+
                     // JPEG 1枚完成
                     TJpgDec.drawJpg(0, 0, jpgBuf, idx);
                     drawCrosshair();       // canvas上に中央十字描画
@@ -225,16 +618,23 @@ void loop() {
                         last_jpg_size = idx;
                     }
 
-                    if (incomingData.gx > 0.1 || incomingData.gx < -0.1) {
-                        angleAccum += incomingData.gy * PI / 180.0f / 25.0; // gyを度からラジアンに変換して累積
+                    const unsigned long now = millis();
+                    if (now - lastAngleUpdateMs >= IMU_UPDATE_INTERVAL_MS) {
+                        const float dt = lastAngleUpdateMs == 0
+                            ? IMU_UPDATE_INTERVAL_MS / 1000.0f
+                            : (now - lastAngleUpdateMs) / 1000.0f;
+                        if (incomingData.gy > 0.1f || incomingData.gy < -0.1f) {
+                            angleAccum += incomingData.gy * PI / 180.0f * dt;
+                        }
+                        lastAngleUpdateMs = now;
                     }
 
                     // Text
-                    if(millis() - ptime > 200){
+                    if(now - ptime >= IMU_UPDATE_INTERVAL_MS){
                         text.clear();
                         text.setCursor(0,10);
                         text.setTextColor(TFT_WHITE, TFT_BLACK); 
-                        text.printf("fps: %.1f \n", fps * 5.0);
+                        text.printf("fps: %.1f \n", fps * 10.0);
                         // ===== ESP-NOWで受信したデータの表示 =====
                         text.setCursor(0,20);
                         text.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -301,44 +701,20 @@ void loop() {
                         fps = 0;
                         ptime = millis();
 
-                        M5.Display.setCursor(43, 225);
-                        M5.Display.print("Auto             Serch             Zoom");
-                    }
-
-                    // Lamp
-                    if(millis() - ptime2 > 500){
-                        int rows = 3;
-                        int cols = 5;
-                        int size = 11;       // 正方形の1辺
-                        int gap = 1;         // 隙間
-                        int spacingX = size + gap; 
-                        int spacingY = size + gap;
-
-                        for (int r = 0; r < rows; r++) {
-                        for (int c = 0; c < cols; c++) {
-                            int x = c * spacingX; // 左上座標
-                            int y = r * spacingY;
-
-                            uint16_t color;
-                            if (random(0, 3) == 0) {
-                                color = TFT_BLACK;   // 1/3 の確率で黒
-                            } else {
-                                color = random(0x0001, 0xFFFF); // 残りはランダム色
-                            }
-
-                            lamp.fillRect(x, y, size, size, color);
-                        }
-                    }
-                        lamp.pushSprite(241, 170);
-
-                        ptime2 = millis();
                     }
                     
                     idx = 0;
                     inJPEG = false;
-                    break;
                 }
             }
+        } else {
+            break;
+        }
         }
     }
+
+    // 受信中に複数枚完成していれば、最後に完成した1枚だけを描画する。
+    drawLatestFrame();
+#endif
+    reportCoreDiagnostics();
 }
