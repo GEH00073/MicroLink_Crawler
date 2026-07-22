@@ -1,5 +1,5 @@
-#ifndef STAMPFLY_HPP
-#define STAMPFLY_HPP
+#ifndef CRAWLER_STATE_HPP
+#define CRAWLER_STATE_HPP
 
 #include <stdint.h>
 
@@ -55,8 +55,8 @@ typedef struct{
     flag_t flag;
     counter_t counter;
     times_t times;
-}stampfly_t;
+} crawler_state_t;
 
-extern stampfly_t StampFly;
+extern crawler_state_t CrawlerState;
 
 #endif

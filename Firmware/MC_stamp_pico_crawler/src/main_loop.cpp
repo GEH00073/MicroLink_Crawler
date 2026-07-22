@@ -25,27 +25,25 @@
  */
 
 //
-// StampFly Flight Control Main Module
+// MicroLink Crawler Control Main Module
 //
 // Desigend by Kouhei Ito 2023~2024
 //
-// 2024-08-11 StampFly 自己開発用のスケルトンプログラム制作開始
+// 2024-08-11 Control skeleton created
 
 #include "main_loop.hpp"
 #include "rc.hpp"
 #include "telemetry.hpp"
-#include "stampfly.hpp"
-#include "unit_rolleri2c.hpp"
+#include "crawler_state.hpp"
 // #include "freertos/FreeRTOS.h"
 // #include "freertos/task.h"
 
-extern UnitRollerI2C RollerI2C;
 float rpm, set_rpm;
 float pos, target_pos;
 bool head_light;
 
 void IRAM_ATTR onTimer(void);
-void init_copter(void);
+void init_crawler(void);
 void update_loop400Hz(void);
 void init_mode(void);
 void average_mode(void);
@@ -105,7 +103,7 @@ void loop_400Hz(void) {
 
     //// Telemetry
     telemetry();
-    StampFly.flag.oldmode = StampFly.flag.mode;  // Memory now mode
+    CrawlerState.flag.oldmode = CrawlerState.flag.mode;  // Memory now mode
     
     // End of Loop_400Hz function    
 }
@@ -114,21 +112,21 @@ void loop_400Hz(void) {
 // Intrupt function
 hw_timer_t* timer = NULL;
 void IRAM_ATTR onTimer(void) {
-    StampFly.flag.loop = 1;
+    CrawlerState.flag.loop = 1;
     //loop_400Hz();
 }
 
-// Initialize StampFly
-void init_copter(void) {
+// Initialize the crawler controller.
+void init_crawler(void) {
     //disableCore1WDT();
     // Initialize Mode
-    StampFly.flag.mode = INIT_MODE;
-    StampFly.flag.loop = 0;
+    CrawlerState.flag.mode = INIT_MODE;
+    CrawlerState.flag.loop = 0;
     // Initialize Serial communication
     Serial.begin(115200);
     // Serial2.begin(115200, SERIAL_8N1, 32, 33);
     delay(1500);
-    Serial.printf("Start StampFly! Skeleton\r\n");
+    Serial.printf("Start MicroLink Crawler\r\n");
     // motor_init();
     // sensor_init();
     rc_init();
@@ -136,7 +134,7 @@ void init_copter(void) {
     // init button G0
     // init_button();
     // setup_pwm_buzzer();
-    Serial.printf("Finish StampFly init!\r\n");
+    Serial.printf("Crawler initialization complete\r\n");
     // start_tone();
 
     // 割り込み設定
@@ -152,24 +150,24 @@ void init_copter(void) {
 void update_loop400Hz(void) {
     uint32_t now_time;
 
-    while (StampFly.flag.loop == 0);
-    StampFly.flag.loop = 0;
+    while (CrawlerState.flag.loop == 0);
+    CrawlerState.flag.loop = 0;
 
     #if 0
     Serial.printf("%9.4f %9.4f %04d\n\r", 
-        StampFly.times.elapsed_time, 
-        StampFly.times.interval_time,
-        StampFly.sensor.bottom_tof_range);
+        CrawlerState.times.elapsed_time,
+        CrawlerState.times.interval_time,
+        CrawlerState.sensor.bottom_tof_range);
     #endif
 
     //Clock
     now_time = micros();
-    StampFly.times.old_elapsed_time = StampFly.times.elapsed_time;
-    StampFly.times.elapsed_time = 1e-6 * (now_time - StampFly.times.start_time);
-    StampFly.times.interval_time = StampFly.times.elapsed_time - StampFly.times.old_elapsed_time;
+    CrawlerState.times.old_elapsed_time = CrawlerState.times.elapsed_time;
+    CrawlerState.times.elapsed_time = 1e-6 * (now_time - CrawlerState.times.start_time);
+    CrawlerState.times.interval_time = CrawlerState.times.elapsed_time - CrawlerState.times.old_elapsed_time;
     
     // Read Sensor Value
-    // sensor_read(&StampFly.sensor);
+    // sensor_read(&CrawlerState.sensor);
     
     // LED Drive
     // led_drive();
@@ -177,24 +175,24 @@ void update_loop400Hz(void) {
 
 void init_mode(void) {
     // motor_stop();
-    StampFly.counter.offset = 0;
+    CrawlerState.counter.offset = 0;
     //Mode change
-    StampFly.flag.mode = AVERAGE_MODE;
+    CrawlerState.flag.mode = AVERAGE_MODE;
     return;
 
 }
 
 void average_mode(void) {
     // Gyro offset Estimate 角速度のオフセットを取得
-    if (StampFly.counter.offset < AVERAGENUM) {
+    if (CrawlerState.counter.offset < AVERAGENUM) {
         // sensor_calc_offset_avarage();
-        StampFly.counter.offset++;
+        CrawlerState.counter.offset++;
         return;
     }
     // Mode change
-    StampFly.flag.mode   = PARKING_MODE;
-    StampFly.times.start_time = micros();
-    StampFly.times.old_elapsed_time = 0.0f;
+    CrawlerState.flag.mode   = PARKING_MODE;
+    CrawlerState.times.start_time = micros();
+    CrawlerState.times.old_elapsed_time = 0.0f;
     return;
 }
 

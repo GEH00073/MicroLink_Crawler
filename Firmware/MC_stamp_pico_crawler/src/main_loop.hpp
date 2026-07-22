@@ -30,10 +30,10 @@
 #include <stdint.h>
 #include <math.h>
 #include <FastLED.h>
-#include "stampfly.hpp"
+#include "crawler_state.hpp"
 
 // グローバル関数の宣言
-void init_copter(void);
+void init_crawler(void);
 void loop_400Hz(void);
 
 #endif

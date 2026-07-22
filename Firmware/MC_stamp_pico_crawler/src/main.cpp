@@ -23,14 +23,12 @@
  */
 
 
-#include "unit_rolleri2c.hpp"
 #include <M5Unified.h>
 #include <Arduino.h>
 #include <FastLED.h>
-#include "stampfly.hpp"
+#include "crawler_state.hpp"
 #include "main_loop.hpp"
 
-UnitRollerI2C RollerI2C;  // Create a UNIT_ROLLERI2C object
 uint32_t p, i, d;         // Defines a variable to store the PID value
 uint8_t r, g, b;
 
@@ -63,18 +61,10 @@ void setup() {
 
     delay(2000);
 
-    init_copter();
+    init_crawler();
     delay(100);
 }
 
 void loop() {
-    // RollerI2C.setSpeed(1000);
-    // RollerI2C.setOutput(1);
-    // delay(2000);
-    // RollerI2C.setOutput(0);
-    // delay(2000);
-  
-    // printf("speed: %d %d\n", RollerI2C.getSpeedReadback()/100, RollerI2C.getPosReadback()/100 % 360);
-    
     loop_400Hz();
 }

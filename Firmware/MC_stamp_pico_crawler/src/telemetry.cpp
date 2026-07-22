@@ -26,7 +26,7 @@
 #include "telemetry.hpp"
 #include "rc.hpp"
 #include "main_loop.hpp"
-#include "stampfly.hpp"
+#include "crawler_state.hpp"
 
 extern float rpm, set_rpm;
 extern float pos, target_pos;
@@ -59,7 +59,7 @@ void telemetry(void) {
 
         // Send !
         //telemetry_send(senddata, sizeof(senddata));
-    } else { // if (StampFly.flag.mode > AVERAGE_MODE) {
+    } else { // if (CrawlerState.flag.mode > AVERAGE_MODE) {
         const uint8_t N = 10;
         // N回に一度送信
         if (Telem_cnt == 0) telemetry_sequence();
@@ -77,10 +77,10 @@ void telemetry_sequence(void) {
             make_telemetry_data(senddata);
             // Send !
             if (telemetry_send(&peerInfo[TELEM], senddata, sizeof(senddata)) == 1){
-                //USBSerial.printf("NG Mode=%d\n\r", StampFly.flag.mode);
+                //USBSerial.printf("NG Mode=%d\n\r", CrawlerState.flag.mode);
             }
             else{
-                //USBSerial.printf("OK Mode=%d\n\r", StampFly.flag.mode);
+                //USBSerial.printf("OK Mode=%d\n\r", CrawlerState.flag.mode);
             }
             // Telem_mode = 2;
             break;

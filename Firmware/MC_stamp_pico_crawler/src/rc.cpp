@@ -28,10 +28,6 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include "main_loop.hpp"
-#include "unit_rolleri2c.hpp"
-
-extern UnitRollerI2C RollerI2C;
-
 // esp_now_peer_info_t slave;
 
 volatile uint16_t Connect_flag = 0;
@@ -182,7 +178,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *recv_data, int data_len)
 
 #if 0
   Serial.printf("%9.4f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f %6.3f \n\r", 
-                                            StampFly.times.interval_time,
+                                            CrawlerState.times.interval_time,
                                             Stick[THROTTLE],
                                             Stick[AILERON],
                                             Stick[ELEVATOR],
