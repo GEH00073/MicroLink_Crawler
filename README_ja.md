@@ -24,13 +24,6 @@ MicroLink Crawlerは、**30 × 30 mmのクローラー走行モジュール**と
 - Atom JoyStickによる無線操縦
 - システム全体をブックサイズの携帯ケースへ収納
 
-## 受賞情報
-
-MicroLink Crawlerは[M5Stack Global Innovation Contest 2026の結果ページ](https://m5stack.com/global-innovation-contest-2026/results)でGrand Prize受賞作品として掲載されています。公開結果では、30 mmのFPVクローラー、7 mmのプリント製履帯、ライブ映像、姿勢情報、赤色物体検出を備える作品として紹介されています。公表されていない審査理由は推測していません。
-
-- [M5Stack Global Innovation Contest 2026 Results](https://m5stack.com/global-innovation-contest-2026/results)
-- [Hackster.io作品ページ](https://www.hackster.io/user2729037/microlink-crawler-379ff1)
-
 ## システム構成
 
 ```mermaid

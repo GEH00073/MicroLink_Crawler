@@ -24,13 +24,6 @@ This repository is a project archive, not a complete reproduction manual. Mechan
 - Wireless operation with Atom JoyStick
 - The complete system fits in a book-sized carrying case
 
-## Award
-
-MicroLink Crawler received the Grand Prize in the [M5Stack Global Innovation Contest 2026 results](https://m5stack.com/global-innovation-contest-2026/results). The public result identifies the project as a 30 mm FPV crawler with 7 mm printed tracks, live video, orientation data, and red-object detection. No unreported judging rationale is inferred here.
-
-- [M5Stack Global Innovation Contest 2026 Results](https://m5stack.com/global-innovation-contest-2026/results)
-- [Hackster.io project page](https://www.hackster.io/user2729037/microlink-crawler-379ff1)
-
 ## System overview
 
 ```mermaid
