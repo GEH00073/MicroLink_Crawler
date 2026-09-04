@@ -4,6 +4,10 @@
 
 **[M5Stack Global Innovation Contest 2026 Grand Prize受賞](https://m5stack.com/global-innovation-contest-2026/results)**
 
+![MicroLink Crawlerのデモ写真](images/microlink-crawler-demo.jpg)
+
+[▶ YouTubeでデモ動画を見る](https://www.youtube.com/watch?v=ZiZfx9JVto8)
+
 MicroLink Crawlerは、**30 × 30 mmのクローラー走行モジュール**と7 mm幅の3Dプリント製リンク式履帯を中心に構成した、ポケットサイズのFPV探査ローバーです。着脱可能なAtomS3R-CAMがFPV映像、姿勢情報、赤色物体検出を担当し、M5Stack Core2が遠隔モニター、Atom JoyStickが無線コントローラーとして機能します。
 
 本リポジトリはプロジェクトアーカイブであり、同一品を完全に再現するための製作マニュアルではありません。機械的な組み合わせ、造形結果、電子部品の組み立ては、使用する部品や工具に応じて調整が必要になる場合があります。

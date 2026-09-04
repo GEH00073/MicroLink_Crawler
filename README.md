@@ -4,6 +4,10 @@ English | [日本語](README_ja.md)
 
 **[Grand Prize Winner — M5Stack Global Innovation Contest 2026](https://m5stack.com/global-innovation-contest-2026/results)**
 
+![MicroLink Crawler demonstration photo](images/microlink-crawler-demo.jpg)
+
+[▶ Watch the demo video on YouTube](https://www.youtube.com/watch?v=ZiZfx9JVto8)
+
 MicroLink Crawler is a pocket-sized FPV exploration rover centred on a **30 × 30 mm crawler drive module** and 7 mm-wide, 3D-printed linked tracks. A detachable AtomS3R-CAM provides FPV video, orientation data, and red-object detection; an M5Stack Core2 acts as the remote monitor and an Atom JoyStick as the wireless controller.
 
 This repository is a project archive, not a complete reproduction manual. Mechanical fit, printing results, and electronic assembly can require adjustment for the parts and tools in use.
